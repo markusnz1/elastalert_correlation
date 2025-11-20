@@ -1,0 +1,78 @@
+# Example Rule: Multiple Failed Authentication Attempts
+# This rule detects when there are at least 5 failed authentication
+# attempts followed by a successful one, which could indicate
+# password guessing or credential stuffing.
+
+name: "Multiple Failed Auth Attempts Followed by Success"
+type: custom_rule_types.CorrelationRule
+index: auth-logs-*
+
+# Alert when at least 1 complete sequence is found
+num_events: 1
+
+# Look for the sequence within a 5-minute window
+timeframe:
+  minutes: 5
+
+# Group events by source IP address
+query_key: source.ip
+
+# Define the sequence of events to detect
+correlated_events:
+  # Position 1: Count at least 5 failed attempts
+  - position: 1
+    type: aggregation
+    query: "auth.status:failed"      # Match failed authentication events
+    aggregation_type: count           # Count the number of occurrences
+    aggregation_field: auth.status    # Field to count (required but not used for count type)
+    aggregation_count: 5              # Must see at least 5 failed attempts
+
+  # Position 2: Followed by a successful login
+  - position: 2
+    key: auth.status
+    value: success
+
+# Alert configuration
+alert: pagerduty
+pagerduty_service_key: "YOUR_PAGERDUTY_KEY"
+
+# Customize the alert message
+alert_subject: "Alert: Successful Login After Multiple Failures from {0}"
+alert_subject_args:
+  - source.ip
+
+alert_text: |
+  SECURITY ALERT: Suspicious Authentication Pattern
+
+  Source IP: {0}
+  Timestamp: {1}
+  Target User: {2}
+
+  Pattern Detected:
+  - At least 5 failed authentication attempts
+  - Followed by a successful login
+
+  This pattern may indicate:
+  - Successful password guessing attack
+  - Credential stuffing with eventual success
+  - Compromised credentials
+
+  Recommended Actions:
+  1. Immediately review the account that was successfully accessed
+  2. Check if the IP address is known/trusted
+  3. Review the user's activity after the successful login
+  4. Consider blocking the source IP
+  5. Force password reset for the affected account
+  6. Enable additional authentication factors
+
+alert_text_args:
+  - source.ip
+  - "@timestamp"
+  - user.name
+
+# Optional: Add filters
+filter:
+  - query:
+      range:
+        "@timestamp":
+          gte: "now-1h"
