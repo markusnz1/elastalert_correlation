@@ -1,0 +1,69 @@
+# Example Rule: Suspicious AWS EC2 Instance Manipulation
+# This rule detects when someone stops an instance, modifies it,
+# and then starts it again - a pattern that could indicate
+# malicious tampering or unauthorized modifications.
+
+name: "Suspicious AWS Instance Manipulation"
+type: custom_rule_types.CorrelationRule
+index: cloudtrail-*
+
+# Alert when at least 1 complete sequence is found
+num_events: 1
+
+# Look for the sequence within a 30-minute window
+timeframe:
+  minutes: 30
+
+# Group events by the AWS user/role making the API calls
+query_key: userIdentity.principalId
+
+# Define the sequence of events to detect
+correlated_events:
+  # Position 1: Stop an EC2 instance
+  - position: 1
+    key: eventName
+    value: StopInstances
+
+  # Position 2: Modify instance attributes (could be security groups, etc.)
+  - position: 2
+    key: eventName
+    value: ModifyInstanceAttribute
+
+  # Position 3: Start the instance again
+  - position: 3
+    key: eventName
+    value: StartInstances
+
+# Alert configuration
+alert: slack
+slack_webhook_url: "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
+
+# Customize the alert message
+alert_subject: "Alert: Suspicious EC2 Instance Manipulation by {0}"
+alert_subject_args:
+  - userIdentity.principalId
+
+alert_text: |
+  SECURITY ALERT: Suspicious EC2 Instance Manipulation Pattern
+
+  User/Role: {0}
+  Timestamp: {1}
+
+  Pattern Detected:
+  - StopInstances → ModifyInstanceAttribute → StartInstances
+
+  This sequence may indicate:
+  - Unauthorized modification of instance configuration
+  - Potential security group tampering
+  - Malicious activity to install backdoors
+
+  Recommended Actions:
+  1. Review the specific instance(s) involved
+  2. Check what attributes were modified
+  3. Verify the identity of the user/role
+  4. Review CloudTrail logs for the full event sequence
+  5. Scan the instance for unauthorized changes
+
+alert_text_args:
+  - userIdentity.principalId
+  - "@timestamp"

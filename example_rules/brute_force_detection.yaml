@@ -1,0 +1,76 @@
+# Example Rule: Brute Force Login Detection
+# This rule detects when a user has multiple failed login attempts
+# with different error codes, followed by a successful login.
+# This pattern is indicative of credential stuffing or brute force attacks.
+
+name: "Brute Force Login Detection"
+type: custom_rule_types.CorrelationRule
+index: authentication-logs-*
+
+# Alert when at least 1 complete sequence is found
+num_events: 1
+
+# Look for the sequence within a 15-minute window
+timeframe:
+  minutes: 15
+
+# Group events by username (each user is tracked separately)
+query_key: user.name
+
+# Define the sequence of events to detect
+correlated_events:
+  # Position 1: Detect multiple unique failure types
+  - position: 1
+    type: aggregation
+    query: "resultType:(50097 OR 50140 OR 50126 OR 0)"  # Various Windows logon failure codes
+    aggregation_type: cardinality  # Count unique values
+    aggregation_field: resultType  # Field to check for uniqueness
+    aggregation_count: 4           # Must see at least 4 different failure types
+
+  # Position 2: Followed by a successful login
+  - position: 2
+    key: resultSignature
+    value: SUCCESS
+
+# Alert configuration
+alert: email
+email: ["security@example.com"]
+
+# Customize the alert message
+alert_subject: "Alert: Brute Force Attack Detected for User {0}"
+alert_subject_args:
+  - user.name
+
+alert_text: |
+  SECURITY ALERT: Potential Brute Force Attack Detected
+
+  User: {0}
+  Timestamp: {1}
+
+  Pattern Detected:
+  - Multiple unique login failure types (indicating various credentials tried)
+  - Followed by a successful login
+
+  This pattern may indicate:
+  - Credential stuffing attack
+  - Brute force attack
+  - Compromised account
+
+  Recommended Actions:
+  1. Review the user's recent activity
+  2. Check if the successful login came from a known location
+  3. Consider forcing a password reset
+  4. Enable MFA if not already enabled
+  5. Review related events in the timeline
+
+alert_text_args:
+  - user.name
+  - "@timestamp"
+
+# Optional: Add filters to exclude certain events
+# filter:
+#   - query:
+#       bool:
+#         must_not:
+#           - term:
+#               user.type: "service_account"

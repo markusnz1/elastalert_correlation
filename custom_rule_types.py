@@ -1,4 +1,5 @@
 import copy
+import re
 
 from elastalert.ruletypes import EventWindow
 from elastalert.ruletypes import RuleType
@@ -11,6 +12,11 @@ class CorrelationRule(RuleType):
     """
     A rule that matches if num_events sequences of correlated_events (in order
     of configured position) occur within a timeframe.
+
+    Supports two types of event matching:
+    1. Regular key-value matching: Match events where a specific field has a specific value
+    2. Aggregation-based matching: Match events based on aggregations (cardinality, count, etc.)
+       across events matching a query
     """
     required_options = set(['num_events', 'timeframe', 'correlated_events'])
 
@@ -110,6 +116,102 @@ class CorrelationRule(RuleType):
                     return num_matches
         return num_matches
 
+    def parse_query_and_match(self, event, query):
+        """
+        Parse a simple Lucene-style query and check if the event matches.
+        Supports basic queries like:
+        - field:value
+        - field:(value1 OR value2 OR value3)
+        - Multiple conditions with AND/OR
+
+        Returns True if the event matches the query, False otherwise.
+        """
+        # Handle queries with parentheses (e.g., field:(value1 OR value2))
+        match = re.match(r'(\w+):\(([^)]+)\)', query)
+        if match:
+            field_name = match.group(1)
+            values_str = match.group(2)
+            # Split by OR and clean up spaces
+            values = [v.strip() for v in values_str.split('OR')]
+
+            # Get the field value from the event
+            event_value = lookup_es_key(event, field_name)
+            if event_value is None:
+                return False
+
+            # Convert event value to string for comparison
+            event_value_str = str(event_value)
+
+            # Check if event value matches any of the values in the query
+            return event_value_str in values
+
+        # Handle simple field:value queries
+        match = re.match(r'(\w+):(.+)', query)
+        if match:
+            field_name = match.group(1)
+            query_value = match.group(2).strip()
+
+            # Get the field value from the event
+            event_value = lookup_es_key(event, field_name)
+            if event_value is None:
+                return False
+
+            return str(event_value) == query_value
+
+        # If query format is not recognized, log a warning and return False
+        elastalert_logger.warning(f"Unrecognized query format: {query}")
+        return False
+
+    def get_aggregation_indices(self, events, aggregation_config):
+        """
+        For an aggregation-type correlated event, find all indices where the
+        aggregation threshold is met.
+
+        Parameters:
+        - events: List of (event, count) tuples from EventWindow
+        - aggregation_config: Dictionary with aggregation configuration
+
+        Returns:
+        - List of indices where the aggregation threshold was met
+        """
+        indices = []
+        query = aggregation_config.get('query', '')
+        agg_type = aggregation_config.get('aggregation_type', 'cardinality')
+        agg_field = aggregation_config.get('aggregation_field')
+        agg_count = aggregation_config.get('aggregation_count', 1)
+
+        # Track unique values and their first occurrence for cardinality
+        if agg_type == 'cardinality':
+            unique_values = set()
+            for index, event_tuple in enumerate(events):
+                event = event_tuple[0]  # 0th index contains event data
+
+                # Check if event matches the query
+                if self.parse_query_and_match(event, query):
+                    # Get the aggregation field value
+                    field_value = lookup_es_key(event, agg_field)
+                    if field_value is not None:
+                        # Add to unique values
+                        unique_values.add(str(field_value))
+
+                        # Check if we've reached the threshold
+                        if len(unique_values) >= agg_count:
+                            indices.append(index)
+
+        # Could add other aggregation types here (count, sum, etc.)
+        elif agg_type == 'count':
+            matching_count = 0
+            for index, event_tuple in enumerate(events):
+                event = event_tuple[0]
+
+                if self.parse_query_and_match(event, query):
+                    matching_count += 1
+
+                    if matching_count >= agg_count:
+                        indices.append(index)
+
+        return indices
+
     def check_for_match(self, key, end=False):
         """
         Constructs a list of lists, checks for number of matches, and alerts.
@@ -121,7 +223,12 @@ class CorrelationRule(RuleType):
         number of separate times the correlated events happened in the order
         specified by their configured positions.
 
-        For example, if 6 events are present at self.occurrences[key], in the
+        Supports two types of correlated events:
+        1. Regular key-value matching (original functionality)
+        2. Aggregation-based matching (enhanced functionality)
+
+        Example 1 - Regular key-value matching:
+        If 6 events are present at self.occurrences[key], in the
         following order and with these values in the eventName field:
 
         StopInstances, ModifyInstanceAttribute, StopInstances, StartInstances,
@@ -143,10 +250,28 @@ class CorrelationRule(RuleType):
         The resulting list (correlated_event_indices) passed to the
         get_num_correlations function will be:
 
-        [[0, 2], [1, 4], [3, 5]] 
+        [[0, 2], [1, 4], [3, 5]]
 
         The number of matches returned should be 2, since 0->1->3 and 2->4->5
         are both valid sequences of events.
+
+        Example 2 - Aggregation-based matching:
+        If the rule configuration specifies:
+
+        correlated_events:
+        - position: 1
+          type: aggregation
+          query: resultType:(50097 OR 50140 OR 50126 OR 0)
+          aggregation_type: cardinality
+          aggregation_field: resultType
+          aggregation_count: 4
+        - position: 2
+          key: resultSignature
+          value: SUCCESS
+
+        Position 1 will match at indices where 4 unique resultType values
+        have been observed in events matching the query. Position 2 will
+        match at indices where resultSignature equals SUCCESS.
         """
         correlated_event_indices = []
         # Check if there are enough events for a correlation to be found
@@ -158,10 +283,23 @@ class CorrelationRule(RuleType):
             # correlated_event_indices list
             for correlated_event in correlated_events:
                 indices = []
-                for index, event in enumerate(self.occurrences[key].data):
-                    # 0th index of event contains event data
-                    if event[0][correlated_event['key']] == correlated_event['value']:
-                        indices.append(index)
+
+                # Check if this is an aggregation-type event
+                if correlated_event.get('type') == 'aggregation':
+                    # Use aggregation logic to find matching indices
+                    indices = self.get_aggregation_indices(
+                        self.occurrences[key].data,
+                        correlated_event
+                    )
+                else:
+                    # Regular key-value matching
+                    for index, event in enumerate(self.occurrences[key].data):
+                        # 0th index of event contains event data
+                        event_data = event[0]
+                        event_value = lookup_es_key(event_data, correlated_event['key'])
+                        if event_value == correlated_event['value']:
+                            indices.append(index)
+
                 correlated_event_indices.append(indices)
             # Check if the number of sequences of events is greater than or
             # equal to the number of events (our threshold for sending an alert)
