@@ -8,6 +8,17 @@ A custom ElastAlert2 rule type that detects sequences of correlated events withi
 
 ---
 
+## Quick Start
+
+**Having import errors?** The most common issue is module location. Jump to [Module Import Error](#module-import-error) in Troubleshooting.
+
+**TL;DR for installation:**
+1. Copy `elastalert_modules/` to where you run ElastAlert2 from (same directory as `config.yaml`)
+2. In your rule: `type: "elastalert_modules.custom_rule_types.CorrelationRule"`
+3. Verify: `python -c "import elastalert_modules.custom_rule_types"`
+
+---
+
 ## Table of Contents
 
 - [Overview](#overview)
@@ -54,40 +65,113 @@ elastalert_correlation/
 │   └── multiple_failed_attempts.yaml   # Failed attempts example
 ├── custom_rule_types.py             # Standalone version (for reference)
 ├── README.md                        # This documentation
+├── INSTALL_WINDOWS.md               # Quick Windows installation guide
 └── .gitignore                       # Git ignore file
 ```
 
-**Note**: The `elastalert_modules/` directory is the one you'll copy to your ElastAlert2 installation. The standalone `custom_rule_types.py` in the root is provided for reference only.
+**Note**:
+- The `elastalert_modules/` directory is the one you'll copy to your ElastAlert2 installation
+- The standalone `custom_rule_types.py` in the root is provided for reference only
+- Windows users: See [INSTALL_WINDOWS.md](INSTALL_WINDOWS.md) for a quick fix guide
 
 ---
 
 ## Installation
 
-### Step 1: Copy Module to ElastAlert2
+### Understanding Module Location
 
-ElastAlert2 requires custom rules to be in a proper Python module. Copy the entire `elastalert_modules/` directory from this repository to your ElastAlert2 installation:
+ElastAlert2 imports custom rule types using Python's import system. The `elastalert_modules` directory must be in a location where Python can find it. There are several valid approaches:
+
+**Option A: Working Directory (Recommended)**
+Place `elastalert_modules/` in the directory where you run ElastAlert2 from.
+
+**Option B: PYTHONPATH**
+Add the parent directory of `elastalert_modules/` to your PYTHONPATH.
+
+**Option C: Virtual Environment Site-Packages**
+Place it in your venv's site-packages (see details below).
+
+### Step 1: Choose Your Installation Method
+
+#### Method A: Working Directory (Recommended - Easiest)
+
+Copy the module to the directory where you run ElastAlert2:
 
 ```bash
 # Clone or download this repository
 git clone https://github.com/markusnz1/elastalert_correlation.git
-cd elastalert_correlation
 
-# Copy the entire module directory to your ElastAlert2 installation
-cp -r elastalert_modules /path/to/elastalert2/
+# Copy to the directory where you run elastalert from
+# This is typically the directory containing your config.yaml
+cd /path/where/you/run/elastalert
+cp -r /path/to/elastalert_correlation/elastalert_modules .
 ```
 
-### Step 2: Verify Module Structure
-
-Your ElastAlert2 directory should now look like this:
-
+Your working directory should now look like:
 ```
-/path/to/elastalert2/
-├── elastalert_modules/          # Copied from this repository
-│   ├── __init__.py              # Makes it a Python module
-│   └── custom_rule_types.py     # CorrelationRule implementation
-└── rules/                       # Your rules directory
-    └── your_rule.yaml
+/path/where/you/run/elastalert/
+├── config.yaml                  # Your ElastAlert2 config
+├── rules/                       # Your rules directory
+│   └── your_rule.yaml
+└── elastalert_modules/          # Custom module (copied)
+    ├── __init__.py
+    └── custom_rule_types.py
 ```
+
+#### Method B: Using PYTHONPATH
+
+If you run ElastAlert2 from different locations, you can add the module to PYTHONPATH:
+
+```bash
+# Clone the repository
+git clone https://github.com/markusnz1/elastalert_correlation.git
+
+# Set PYTHONPATH to include the repository directory
+export PYTHONPATH="/path/to/elastalert_correlation:$PYTHONPATH"
+
+# Or add to your shell profile (~/.bashrc, ~/.zshrc)
+echo 'export PYTHONPATH="/path/to/elastalert_correlation:$PYTHONPATH"' >> ~/.bashrc
+
+# Run ElastAlert2 (will now find elastalert_modules)
+python -m elastalert.elastalert --config config.yaml
+```
+
+#### Method C: Virtual Environment Site-Packages
+
+If using a virtual environment, place the module in the site-packages root (NOT inside the elastalert package):
+
+```bash
+# Activate your virtual environment
+source .venv/bin/activate  # Linux/Mac
+# OR
+.venv\Scripts\activate     # Windows
+
+# Find your site-packages directory
+python -c "import site; print(site.getsitepackages()[0])"
+# Example output: /path/to/.venv/lib/python3.x/site-packages
+
+# Copy the module to site-packages ROOT (not inside elastalert)
+cp -r elastalert_correlation/elastalert_modules /path/to/.venv/lib/python3.x/site-packages/
+
+# Verify structure
+ls /path/to/.venv/lib/python3.x/site-packages/elastalert_modules/
+# Should show: __init__.py  custom_rule_types.py
+```
+
+**Important**: Do NOT place `elastalert_modules` inside the `elastalert` package folder. It should be a sibling to `elastalert`, not a child.
+
+### Step 2: Verify Installation
+
+Test that Python can find your module:
+
+```bash
+# From the directory where you'll run ElastAlert2
+python -c "import elastalert_modules.custom_rule_types; print('✓ Module found successfully')"
+```
+
+If you see `✓ Module found successfully`, the installation is correct!
+
+If you see `ModuleNotFoundError: No module named 'elastalert_modules'`, see the [Troubleshooting](#troubleshooting) section below.
 
 ### Step 3: Copy Example Rules (Optional)
 
@@ -632,6 +716,75 @@ Indices: `[3]` (only index 3 meets the threshold of 3 unique values)
 ---
 
 ## Troubleshooting
+
+### Module Import Error
+
+**Error:** `EAException: Could not import module elastalert_modules.custom_rule_types.CorrelationRule: No module named 'elastalert_modules'`
+
+**Cause:** Python cannot find the `elastalert_modules` directory.
+
+**Solutions:**
+
+1. **Check module location:**
+   ```bash
+   # From where you run ElastAlert2, check if the module exists
+   ls -la elastalert_modules/
+   # Should show: __init__.py  custom_rule_types.py
+   ```
+
+2. **Verify you're in the correct directory:**
+   ```bash
+   # Make sure you're running ElastAlert2 from the directory containing elastalert_modules
+   pwd
+   ls elastalert_modules/  # Should work without errors
+   ```
+
+3. **Test Python import:**
+   ```bash
+   # This should work without errors
+   python -c "import elastalert_modules.custom_rule_types"
+   ```
+
+4. **If using venv, verify site-packages installation:**
+   ```bash
+   # Activate venv
+   source .venv/bin/activate  # Linux/Mac
+   # OR
+   .venv\Scripts\activate     # Windows
+
+   # Check where site-packages is
+   python -c "import site; print(site.getsitepackages()[0])"
+
+   # Verify elastalert_modules is there
+   ls $(python -c "import site; print(site.getsitepackages()[0])")/elastalert_modules/
+   ```
+
+5. **Common mistakes:**
+   - ❌ Placing `elastalert_modules` inside `.venv/Lib/site-packages/elastalert/` (WRONG - it's inside elastalert package)
+   - ✅ Placing `elastalert_modules` inside `.venv/Lib/site-packages/` (CORRECT - sibling to elastalert)
+
+   ```bash
+   # WRONG structure:
+   site-packages/
+   └── elastalert/
+       └── elastalert_modules/  # ❌ Will not work
+
+   # CORRECT structure:
+   site-packages/
+   ├── elastalert/              # ElastAlert2 package
+   └── elastalert_modules/      # ✅ Custom module (sibling)
+       ├── __init__.py
+       └── custom_rule_types.py
+   ```
+
+6. **Use PYTHONPATH as alternative:**
+   ```bash
+   # Windows
+   set PYTHONPATH=C:\path\to\elastalert_correlation;%PYTHONPATH%
+
+   # Linux/Mac
+   export PYTHONPATH="/path/to/elastalert_correlation:$PYTHONPATH"
+   ```
 
 ### No Alerts Triggered
 
