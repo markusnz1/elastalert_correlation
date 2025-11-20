@@ -11,6 +11,7 @@ A custom ElastAlert2 rule type that detects sequences of correlated events withi
 ## Table of Contents
 
 - [Overview](#overview)
+- [Repository Structure](#repository-structure)
 - [Installation](#installation)
 - [Configuration](#configuration)
   - [Basic Configuration](#basic-configuration)
@@ -38,18 +39,76 @@ This is particularly useful for security use cases like:
 
 ---
 
+## Repository Structure
+
+This repository contains:
+
+```
+elastalert_correlation/
+├── elastalert_modules/              # Python module (ready to copy)
+│   ├── __init__.py                  # Module initialization
+│   └── custom_rule_types.py         # CorrelationRule implementation
+├── example_rules/                   # Example rule configurations
+│   ├── brute_force_detection.yaml   # Brute force detection example
+│   ├── aws_instance_manipulation.yaml  # AWS API sequence example
+│   └── multiple_failed_attempts.yaml   # Failed attempts example
+├── custom_rule_types.py             # Standalone version (for reference)
+├── README.md                        # This documentation
+└── .gitignore                       # Git ignore file
+```
+
+**Note**: The `elastalert_modules/` directory is the one you'll copy to your ElastAlert2 installation. The standalone `custom_rule_types.py` in the root is provided for reference only.
+
+---
+
 ## Installation
 
-1. Copy `custom_rule_types.py` to your ElastAlert2 rules directory or a custom location
-2. Configure ElastAlert2 to load custom rules by adding to your `config.yaml`:
+### Step 1: Copy Module to ElastAlert2
+
+ElastAlert2 requires custom rules to be in a proper Python module. Copy the entire `elastalert_modules/` directory from this repository to your ElastAlert2 installation:
+
+```bash
+# Clone or download this repository
+git clone https://github.com/markusnz1/elastalert_correlation.git
+cd elastalert_correlation
+
+# Copy the entire module directory to your ElastAlert2 installation
+cp -r elastalert_modules /path/to/elastalert2/
+```
+
+### Step 2: Verify Module Structure
+
+Your ElastAlert2 directory should now look like this:
+
+```
+/path/to/elastalert2/
+├── elastalert_modules/          # Copied from this repository
+│   ├── __init__.py              # Makes it a Python module
+│   └── custom_rule_types.py     # CorrelationRule implementation
+└── rules/                       # Your rules directory
+    └── your_rule.yaml
+```
+
+### Step 3: Copy Example Rules (Optional)
+
+You can also copy the example rules to your ElastAlert2 rules directory:
+
+```bash
+# Copy example rules to your rules directory
+cp example_rules/*.yaml /path/to/elastalert2/rules/
+
+# Edit them to match your environment (index names, alert settings, etc.)
+```
+
+### Step 4: Reference in Rules
+
+In your rule configuration files, reference the custom rule type using the full module path:
 
 ```yaml
-rules_loader: FileRulesLoader
-rules_folder: /path/to/rules
-# If custom_rule_types.py is in a different location:
-custom_rule_types:
-  - /path/to/custom_rule_types.py
+type: "elastalert_modules.custom_rule_types.CorrelationRule"
 ```
+
+**Note**: The quotes around the type are required when using custom rule types.
 
 ---
 
@@ -61,7 +120,7 @@ All correlation rules require these fields:
 
 ```yaml
 name: "My Correlation Rule"
-type: custom_rule_types.CorrelationRule
+type: "elastalert_modules.custom_rule_types.CorrelationRule"
 index: my-index-*
 
 # Required fields
@@ -131,7 +190,7 @@ Detect multiple failed login attempts (with different error codes) followed by a
 
 ```yaml
 name: "Brute Force Login Detection"
-type: custom_rule_types.CorrelationRule
+type: "elastalert_modules.custom_rule_types.CorrelationRule"
 index: windows-logs-*
 
 num_events: 1
@@ -161,7 +220,7 @@ Detect suspicious AWS API call sequences (original use case):
 
 ```yaml
 name: "Suspicious AWS Instance Manipulation"
-type: custom_rule_types.CorrelationRule
+type: "elastalert_modules.custom_rule_types.CorrelationRule"
 index: cloudtrail-*
 
 num_events: 1
@@ -191,7 +250,7 @@ Detect at least 5 failed authentication attempts followed by a success:
 
 ```yaml
 name: "Multiple Failed Auth Attempts"
-type: custom_rule_types.CorrelationRule
+type: "elastalert_modules.custom_rule_types.CorrelationRule"
 index: auth-logs-*
 
 num_events: 1
@@ -225,7 +284,7 @@ This example detects when a user stops an EC2 instance, modifies it, and starts 
 
 ```yaml
 name: "EC2 Instance Manipulation Pattern"
-type: custom_rule_types.CorrelationRule
+type: "elastalert_modules.custom_rule_types.CorrelationRule"
 index: cloudtrail-*
 
 num_events: 1
@@ -255,7 +314,7 @@ Detect 4 unique failure types followed by success (your use case):
 
 ```yaml
 name: "Multiple Unique Failures Before Success"
-type: custom_rule_types.CorrelationRule
+type: "elastalert_modules.custom_rule_types.CorrelationRule"
 index: authentication-*
 
 num_events: 1
@@ -299,7 +358,7 @@ Combine aggregation and regular matching for complex patterns:
 
 ```yaml
 name: "Privilege Escalation Pattern"
-type: custom_rule_types.CorrelationRule
+type: "elastalert_modules.custom_rule_types.CorrelationRule"
 index: security-logs-*
 
 num_events: 1
@@ -332,7 +391,7 @@ Detect patterns across all users (not grouped by a specific field):
 
 ```yaml
 name: "System-Wide Attack Pattern"
-type: custom_rule_types.CorrelationRule
+type: "elastalert_modules.custom_rule_types.CorrelationRule"
 index: system-logs-*
 
 num_events: 2  # At least 2 complete sequences
@@ -430,7 +489,7 @@ Detect login from new location after multiple failed attempts:
 
 ```yaml
 name: "Account Takeover Detection"
-type: custom_rule_types.CorrelationRule
+type: "elastalert_modules.custom_rule_types.CorrelationRule"
 index: auth-logs-*
 
 num_events: 1
@@ -470,7 +529,7 @@ Detect reconnaissance followed by exploitation:
 
 ```yaml
 name: "Multi-Stage Attack Pattern"
-type: custom_rule_types.CorrelationRule
+type: "elastalert_modules.custom_rule_types.CorrelationRule"
 index: security-*
 
 num_events: 1
@@ -503,7 +562,7 @@ Detect unusual file access followed by large upload:
 
 ```yaml
 name: "Potential Data Exfiltration"
-type: custom_rule_types.CorrelationRule
+type: "elastalert_modules.custom_rule_types.CorrelationRule"
 index: file-access-*
 
 num_events: 1
