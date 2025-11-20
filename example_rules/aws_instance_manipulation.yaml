@@ -4,7 +4,7 @@
 # malicious tampering or unauthorized modifications.
 
 name: "Suspicious AWS Instance Manipulation"
-type: custom_rule_types.CorrelationRule
+type: "elastalert_modules.custom_rule_types.CorrelationRule"
 index: cloudtrail-*
 
 # Alert when at least 1 complete sequence is found

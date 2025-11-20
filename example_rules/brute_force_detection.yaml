@@ -4,7 +4,7 @@
 # This pattern is indicative of credential stuffing or brute force attacks.
 
 name: "Brute Force Login Detection"
-type: custom_rule_types.CorrelationRule
+type: "elastalert_modules.custom_rule_types.CorrelationRule"
 index: authentication-logs-*
 
 # Alert when at least 1 complete sequence is found

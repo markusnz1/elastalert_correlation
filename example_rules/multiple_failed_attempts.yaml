@@ -4,7 +4,7 @@
 # password guessing or credential stuffing.
 
 name: "Multiple Failed Auth Attempts Followed by Success"
-type: custom_rule_types.CorrelationRule
+type: "elastalert_modules.custom_rule_types.CorrelationRule"
 index: auth-logs-*
 
 # Alert when at least 1 complete sequence is found
