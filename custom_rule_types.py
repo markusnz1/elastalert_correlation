@@ -25,6 +25,8 @@ class CorrelationRule(RuleType):
         self.ts_field = self.rules.get('timestamp_field', '@timestamp')
         self.get_ts = new_get_event_ts(self.ts_field)
         self.attach_related = self.rules.get('attach_related', True)
+        # Store captured field values for comparison across positions
+        self.captured_fields = {}
 
     def add_data(self, data):
         """
@@ -162,6 +164,46 @@ class CorrelationRule(RuleType):
         elastalert_logger.warning(f"Unrecognized query format: {query}")
         return False
 
+    def compare_field_values(self, value1, value2, condition):
+        """
+        Compare two field values based on the specified condition.
+
+        Parameters:
+        - value1: First value to compare
+        - value2: Second value to compare
+        - condition: Comparison condition (equal, not_equal, greater_than, less_than, etc.)
+
+        Returns True if the condition is met, False otherwise.
+        """
+        if value1 is None or value2 is None:
+            return False
+
+        # Convert to strings for comparison
+        val1_str = str(value1)
+        val2_str = str(value2)
+
+        if condition == 'equal':
+            return val1_str == val2_str
+        elif condition == 'not_equal':
+            return val1_str != val2_str
+        elif condition == 'greater_than':
+            try:
+                return float(val1_str) > float(val2_str)
+            except (ValueError, TypeError):
+                return False
+        elif condition == 'less_than':
+            try:
+                return float(val1_str) < float(val2_str)
+            except (ValueError, TypeError):
+                return False
+        elif condition == 'contains':
+            return val2_str in val1_str
+        elif condition == 'not_contains':
+            return val2_str not in val1_str
+        else:
+            elastalert_logger.warning(f"Unknown comparison condition: {condition}")
+            return False
+
     def get_aggregation_indices(self, events, aggregation_config):
         """
         For an aggregation-type correlated event, find all indices where the
@@ -223,9 +265,10 @@ class CorrelationRule(RuleType):
         number of separate times the correlated events happened in the order
         specified by their configured positions.
 
-        Supports two types of correlated events:
+        Supports three types of correlated events:
         1. Regular key-value matching (original functionality)
         2. Aggregation-based matching (enhanced functionality)
+        3. Field comparison matching (allows comparing fields between positions)
 
         Example 1 - Regular key-value matching:
         If 6 events are present at self.occurrences[key], in the
@@ -272,12 +315,36 @@ class CorrelationRule(RuleType):
         Position 1 will match at indices where 4 unique resultType values
         have been observed in events matching the query. Position 2 will
         match at indices where resultSignature equals SUCCESS.
+
+        Example 3 - Field comparison matching:
+        If the rule configuration specifies:
+
+        correlated_events:
+        - position: 1
+          key: resultType
+          value: "50074"
+          capture_fields:
+            - field: country
+              as: position1_country
+        - position: 2
+          key: resultType
+          value: "0"
+          compare_fields:
+            - field: country
+              to: position1_country
+              condition: not_equal
+
+        Position 1 will capture the country field value. Position 2 will only
+        match if resultType is "0" AND the country is different from position 1.
         """
         correlated_event_indices = []
         # Check if there are enough events for a correlation to be found
         if self.occurrences[key].count() >= len(self.rules['correlated_events']):
             # Sort events by their positions defined in rule configuration
             correlated_events = sorted(self.rules['correlated_events'], key=lambda d: d['position'])
+            # Reset captured fields for this query key
+            self.captured_fields[key] = {}
+
             # For each event we're looking for, find the indices at which it
             # occurs and store them as a nested list inside the
             # correlated_event_indices list
@@ -291,14 +358,58 @@ class CorrelationRule(RuleType):
                         self.occurrences[key].data,
                         correlated_event
                     )
+                    # Handle field capture for aggregation matches
+                    if 'capture_fields' in correlated_event and indices:
+                        for idx in indices:
+                            event_data = self.occurrences[key].data[idx][0]
+                            for capture in correlated_event['capture_fields']:
+                                field_value = lookup_es_key(event_data, capture['field'])
+                                capture_key = f"{capture['as']}_{idx}"
+                                self.captured_fields[key][capture_key] = field_value
                 else:
-                    # Regular key-value matching
+                    # Regular key-value matching with optional field comparison
                     for index, event in enumerate(self.occurrences[key].data):
                         # 0th index of event contains event data
                         event_data = event[0]
                         event_value = lookup_es_key(event_data, correlated_event['key'])
+
+                        # Check basic key-value match
                         if event_value == correlated_event['value']:
-                            indices.append(index)
+                            # Check if we need to compare fields with captured values
+                            if 'compare_fields' in correlated_event:
+                                match = True
+                                for comparison in correlated_event['compare_fields']:
+                                    field_value = lookup_es_key(event_data, comparison['field'])
+                                    compare_to = comparison['to']
+                                    condition = comparison.get('condition', 'not_equal')
+
+                                    # Look for captured value from any previous position
+                                    captured_value = None
+                                    for captured_key in self.captured_fields[key]:
+                                        if captured_key.startswith(compare_to + '_'):
+                                            captured_value = self.captured_fields[key][captured_key]
+                                            break
+
+                                    if captured_value is None:
+                                        match = False
+                                        break
+
+                                    # Perform the comparison
+                                    if not self.compare_field_values(field_value, captured_value, condition):
+                                        match = False
+                                        break
+
+                                if match:
+                                    indices.append(index)
+                            else:
+                                indices.append(index)
+
+                            # Handle field capture for matched events
+                            if index in indices and 'capture_fields' in correlated_event:
+                                for capture in correlated_event['capture_fields']:
+                                    field_value = lookup_es_key(event_data, capture['field'])
+                                    capture_key = f"{capture['as']}_{index}"
+                                    self.captured_fields[key][capture_key] = field_value
 
                 correlated_event_indices.append(indices)
             # Check if the number of sequences of events is greater than or
