@@ -1,10 +1,12 @@
-# ElastAlert2 Correlation Rule with Aggregation Support
+# ElastAlert2 Correlation Rule with Aggregation & Field Comparison
 
-A custom ElastAlert2 rule type that detects sequences of correlated events within a timeframe, with support for both simple key-value matching and advanced aggregation-based matching.
+A custom ElastAlert2 rule type that detects sequences of correlated events within a timeframe, with support for simple key-value matching, advanced aggregation-based matching, and field comparison between correlated positions.
 
 **Original Implementation**: https://github.com/jertel/elastalert2/discussions/854 by [@briandefiant](https://github.com/briandefiant)
 
-**Enhanced with**: Aggregation support for detecting patterns like multiple failed attempts followed by success
+**Enhanced with**:
+- Aggregation support for detecting patterns like multiple failed attempts followed by success
+- Field comparison support for detecting geo-anomalies, privilege changes, and cross-position validation
 
 ---
 
@@ -17,9 +19,11 @@ A custom ElastAlert2 rule type that detects sequences of correlated events withi
   - [Basic Configuration](#basic-configuration)
   - [Regular Key-Value Matching](#regular-key-value-matching)
   - [Aggregation-Based Matching](#aggregation-based-matching)
+  - [Field Comparison Matching](#field-comparison-matching)
 - [Use Cases](#use-cases)
 - [Examples](#examples)
 - [Aggregation Types](#aggregation-types)
+- [Field Comparison Conditions](#field-comparison-conditions)
 - [Query Syntax](#query-syntax)
 - [Advanced Examples](#advanced-examples)
 
@@ -27,15 +31,19 @@ A custom ElastAlert2 rule type that detects sequences of correlated events withi
 
 ## Overview
 
-The `CorrelationRule` detects sequences of events that occur in a specific order within a defined timeframe. It supports two types of event matching:
+The `CorrelationRule` detects sequences of events that occur in a specific order within a defined timeframe. It supports three types of event matching:
 
 1. **Regular Key-Value Matching**: Match events where a specific field equals a specific value
 2. **Aggregation-Based Matching**: Match based on aggregations (e.g., cardinality, count) across events matching a query
+3. **Field Comparison Matching**: Compare field values between correlated positions to detect changes or anomalies
 
 This is particularly useful for security use cases like:
 - Detecting multiple failed login attempts followed by a successful login
 - Identifying suspicious sequences of AWS API calls
 - Tracking multi-stage attack patterns
+- **Detecting impossible travel/geo-anomalies** (e.g., login from different countries)
+- **Identifying privilege escalation** (e.g., role changes between events)
+- **Spotting credential compromise** (e.g., IP address changes for same user)
 
 ---
 
@@ -179,6 +187,39 @@ correlated_events:
 - `aggregation_type`: Type of aggregation to perform (see [Aggregation Types](#aggregation-types))
 - `aggregation_field`: Field to aggregate on
 - `aggregation_count`: Minimum threshold for the aggregation to be considered a match
+
+### Field Comparison Matching
+
+Compare field values between correlated positions to detect changes or anomalies:
+
+```yaml
+correlated_events:
+  - position: 1
+    key: resultType
+    value: "50074"
+    capture_fields:                                    # Capture fields from this position
+      - field: location.countryOrRegion                # Field to capture
+        as: failed_auth_country                        # Store as this name
+      - field: ipAddress
+        as: failed_auth_ip
+  - position: 2
+    key: resultType
+    value: "0"
+    compare_fields:                                    # Compare with captured fields
+      - field: location.countryOrRegion                # Field to compare
+        to: failed_auth_country                        # Compare with captured value
+        condition: not_equal                           # Condition (default: not_equal)
+```
+
+**Field Comparison Parameters:**
+
+- `capture_fields`: List of fields to capture from matched events at this position
+  - `field`: Field name to capture
+  - `as`: Name to store the captured value (used in later comparisons)
+- `compare_fields`: List of field comparisons to validate
+  - `field`: Field name to compare
+  - `to`: Name of previously captured value
+  - `condition`: Comparison condition (see [Field Comparison Conditions](#field-comparison-conditions))
 
 ---
 
@@ -448,6 +489,105 @@ aggregation_count: 10         # At least 10 matching events
 
 ---
 
+## Field Comparison Conditions
+
+Field comparison allows you to detect when values change or remain the same between correlated positions. This is powerful for detecting anomalies and suspicious behavior patterns.
+
+### Available Conditions
+
+#### `not_equal` (Default)
+Values must be **different** between positions.
+
+```yaml
+compare_fields:
+  - field: location.country
+    to: initial_country
+    condition: not_equal  # Alert if country changed
+```
+
+**Use cases:**
+- Impossible travel (country/city changes)
+- IP address changes
+- User agent switches
+- Device fingerprint mismatches
+
+#### `equal`
+Values must be the **same** between positions.
+
+```yaml
+compare_fields:
+  - field: source.ip
+    to: initial_ip
+    condition: equal  # Alert only if IP stays the same
+```
+
+**Use cases:**
+- Verify consistency across events
+- Ensure same source for multi-step operations
+- Validate session continuity
+
+#### `greater_than`
+Numeric value must be **greater** than captured value.
+
+```yaml
+compare_fields:
+  - field: user.privilege_level
+    to: initial_privilege
+    condition: greater_than  # Privilege escalation
+```
+
+**Use cases:**
+- Privilege escalation detection
+- Data volume increases
+- Access level changes
+- Severity increases
+
+#### `less_than`
+Numeric value must be **less** than captured value.
+
+```yaml
+compare_fields:
+  - field: authentication.strength
+    to: initial_auth_strength
+    condition: less_than  # Weaker authentication used
+```
+
+**Use cases:**
+- Authentication downgrade detection
+- Security level decreases
+- Monitoring threshold drops
+
+#### `contains`
+Value must **contain** the captured value as a substring.
+
+```yaml
+compare_fields:
+  - field: user_agent
+    to: initial_browser
+    condition: contains  # Same browser family
+```
+
+**Use cases:**
+- Partial string matching
+- Domain/subdomain validation
+- Browser family detection
+
+#### `not_contains`
+Value must **not contain** the captured value as a substring.
+
+```yaml
+compare_fields:
+  - field: destination.domain
+    to: trusted_domain
+    condition: not_contains  # Accessing untrusted domains
+```
+
+**Use cases:**
+- Detect access to unexpected resources
+- Identify deviation from normal patterns
+
+---
+
 ## Query Syntax
 
 The `query` parameter supports Lucene-style syntax:
@@ -482,6 +622,75 @@ query: "action:login"
 ---
 
 ## Advanced Examples
+
+### Example: Phishing Detection with Impossible Travel
+
+Detect when a user has a failed authentication from one country followed by a successful login from a different country (strong indicator of credential compromise):
+
+```yaml
+name: "Phishing Detection - Country Mismatch After Failed Auth"
+type: "elastalert_modules.custom_rule_types.CorrelationRule"
+index: nvsoc_*_azure-*
+
+timeframe:
+  hours: 1  # Short timeframe for impossible travel detection
+
+realert:
+  hours: 48
+
+filter:
+  - query:
+      query_string:
+        query: 'operationName:"Sign-in activity" AND resultType:(50074 OR 0) AND riskEventTypes:*'
+
+# Group by user to detect same user across different countries
+query_key:
+  - signInIdentifier
+
+num_events: 1
+correlated_events:
+  # Position 1: Failed authentication attempt (user doesn't exist or error)
+  - position: 1
+    key: resultType
+    value: "50074"
+    capture_fields:
+      - field: location.countryOrRegion  # Capture country from failed attempt
+        as: failed_auth_country
+      - field: ipAddress                 # Also capture IP for context
+        as: failed_auth_ip
+
+  # Position 2: Successful login from a DIFFERENT country (strong phishing indicator)
+  - position: 2
+    key: resultType
+    value: "0"
+    compare_fields:
+      - field: location.countryOrRegion  # Compare with captured country
+        to: failed_auth_country
+        condition: not_equal              # Alert only if country is different
+
+alert:
+  - email
+email: ["security@example.com"]
+
+alert_text: |
+  Potential Phishing Detected - Impossible Travel
+
+  User: {signInIdentifier}
+
+  Sequence:
+  1. Failed auth from country: {failed_auth_country} (IP: {failed_auth_ip})
+  2. Successful login from different country: {location.countryOrRegion}
+
+  Timeframe: Within 1 hour
+
+  This pattern suggests credential compromise or phishing attack.
+```
+
+**Why this works:**
+- Captures the country from the failed authentication attempt
+- Only alerts if the successful login is from a **different country**
+- Uses `query_key` to track per-user sequences
+- Short 1-hour timeframe for true impossible travel scenarios
 
 ### Example: Detecting Account Takeover Pattern
 
@@ -589,6 +798,113 @@ alert: pagerduty
 pagerduty_service_key: "your-key"
 ```
 
+### Example: Privilege Escalation Detection with Role Comparison
+
+Detect when a user's role or privilege level changes between events:
+
+```yaml
+name: "Privilege Escalation Detection"
+type: "elastalert_modules.custom_rule_types.CorrelationRule"
+index: audit-logs-*
+
+timeframe:
+  minutes: 30
+
+query_key: user.id
+
+num_events: 1
+correlated_events:
+  - position: 1
+    key: event.action
+    value: login
+    capture_fields:
+      - field: user.role
+        as: initial_role
+      - field: user.privilege_level
+        as: initial_privilege
+
+  - position: 2
+    key: event.action
+    value: access_sensitive_resource
+    compare_fields:
+      - field: user.role
+        to: initial_role
+        condition: not_equal  # Role changed
+      - field: user.privilege_level
+        to: initial_privilege
+        condition: greater_than  # Privilege increased
+
+alert: slack
+slack_webhook_url: "https://hooks.slack.com/..."
+
+alert_text: |
+  Privilege Escalation Detected
+
+  User: {user.id}
+  Initial Role: {initial_role}
+  Current Role: {user.role}
+  Initial Privilege: {initial_privilege}
+  Current Privilege: {user.privilege_level}
+
+  This user's privileges increased between login and sensitive resource access.
+```
+
+### Example: IP Address Change Detection (Session Hijacking)
+
+Detect when the same session/token is used from different IP addresses:
+
+```yaml
+name: "Potential Session Hijacking"
+type: "elastalert_modules.custom_rule_types.CorrelationRule"
+index: web-access-*
+
+timeframe:
+  minutes: 10
+
+query_key: session.token
+
+num_events: 1
+correlated_events:
+  - position: 1
+    key: event.action
+    value: api_request
+    capture_fields:
+      - field: source.ip
+        as: original_ip
+      - field: user_agent.original
+        as: original_user_agent
+
+  - position: 2
+    key: event.action
+    value: api_request
+    compare_fields:
+      - field: source.ip
+        to: original_ip
+        condition: not_equal  # Different IP address
+      - field: user_agent.original
+        to: original_user_agent
+        condition: not_equal  # Different user agent
+
+alert: pagerduty
+pagerduty_service_key: "your-key"
+
+alert_text: |
+  Potential Session Hijacking Detected
+
+  Session Token: {session.token}
+  User: {user.name}
+
+  Original Request:
+  - IP: {original_ip}
+  - User Agent: {original_user_agent}
+
+  Suspicious Request:
+  - IP: {source.ip}
+  - User Agent: {user_agent.original}
+
+  Same session token used from different IP and browser within {timeframe}.
+```
+
 ---
 
 ## How It Works
@@ -602,6 +918,10 @@ The correlation rule works by:
 3. **Position Matching**: For each correlated event position:
    - **Regular matching**: Find indices where field equals value
    - **Aggregation matching**: Find indices where aggregation threshold is met
+   - **Field comparison matching**:
+     - Capture field values at earlier positions
+     - Compare current event's fields with captured values
+     - Only include indices where comparisons pass
 4. **Sequence Detection**: Find valid sequences where positions increase monotonically
 5. **Alert Triggering**: If `num_events` or more complete sequences are found, trigger alert
 
@@ -631,6 +951,83 @@ Indices: `[3]` (only index 3 meets the threshold of 3 unique values)
 
 ---
 
+## Combining Features
+
+You can combine all three matching types (key-value, aggregation, and field comparison) in a single rule for sophisticated detection:
+
+```yaml
+name: "Advanced Threat Detection - Combined Features"
+type: "elastalert_modules.custom_rule_types.CorrelationRule"
+index: security-*
+
+timeframe:
+  hours: 2
+
+query_key: user.id
+
+num_events: 1
+correlated_events:
+  # Position 1: Multiple failed attempts (aggregation)
+  - position: 1
+    type: aggregation
+    query: "auth.result:(failure OR denied)"
+    aggregation_type: cardinality
+    aggregation_field: auth.method
+    aggregation_count: 3  # At least 3 different auth methods tried
+    capture_fields:
+      - field: source.country
+        as: initial_country
+      - field: source.ip
+        as: initial_ip
+
+  # Position 2: Successful auth (key-value matching)
+  - position: 2
+    key: auth.result
+    value: success
+    capture_fields:
+      - field: user.privilege_level
+        as: login_privilege
+
+  # Position 3: High-value action (key-value + field comparison)
+  - position: 3
+    key: event.category
+    value: admin_action
+    compare_fields:
+      - field: source.country
+        to: initial_country
+        condition: not_equal  # Different country than initial attempts
+      - field: user.privilege_level
+        to: login_privilege
+        condition: greater_than  # Privilege escalated since login
+
+alert: pagerduty
+pagerduty_service_key: "your-key"
+
+alert_text: |
+  High-Confidence Threat Detected
+
+  User: {user.id}
+
+  Attack Pattern:
+  1. Multiple auth methods tried (3+) from {initial_country}
+  2. Successful login with privilege level {login_privilege}
+  3. Admin action performed from different country with elevated privileges
+
+  This pattern indicates a sophisticated attack with:
+  - Brute force/credential stuffing
+  - Successful compromise
+  - Privilege escalation
+  - Impossible travel
+```
+
+This example demonstrates:
+- **Aggregation** at position 1 (multiple auth methods)
+- **Field capture** at positions 1 and 2 (country, IP, privilege)
+- **Key-value matching** at all positions
+- **Field comparison** at position 3 (country change + privilege increase)
+
+---
+
 ## Troubleshooting
 
 ### No Alerts Triggered
@@ -655,6 +1052,18 @@ Indices: `[3]` (only index 3 meets the threshold of 3 unique values)
 1. **Narrow timeframe**: Use smaller time windows
 2. **Add filters**: Use ElastAlert2's `filter` to reduce events processed
 3. **Use query_key**: Group events by a specific field to reduce correlation complexity
+
+### Field Comparison Not Working
+
+1. **Verify field names**: Ensure field names in `capture_fields` and `compare_fields` match your Elasticsearch schema exactly
+2. **Check field values**: Fields must be non-null to be captured and compared
+3. **Test without comparison**: First verify the basic correlation works, then add field comparison
+4. **Check captured values**: Enable debug logging to see what values are being captured:
+   ```yaml
+   logging:
+     level: DEBUG
+   ```
+5. **Multiple captures**: If capturing the same field name at different indices, the implementation will use the most recently captured value
 
 ---
 
@@ -722,5 +1131,10 @@ For questions or issues:
 
 ## Version History
 
+- **v3.0**: Added field comparison support
+  - `capture_fields`: Capture field values from any position
+  - `compare_fields`: Compare fields between positions
+  - Six comparison conditions: `equal`, `not_equal`, `greater_than`, `less_than`, `contains`, `not_contains`
+  - Use cases: Impossible travel, privilege escalation, session hijacking, IP changes
 - **v2.0**: Added aggregation support (cardinality, count)
 - **v1.0**: Original implementation (key-value matching only)
